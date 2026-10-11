@@ -1017,6 +1017,7 @@ def sdpa_forward(
             kernel_v_cache,
             block_tables=block_tables,
             block_size=kernel_block_size,
+            block_stride=kv_cache.block_stride_for_layer(layer_idx),
             cu_seqlens=ctx.cu_seqlens,
             context_lens=ctx.context_lens,
             ctx=ctx,

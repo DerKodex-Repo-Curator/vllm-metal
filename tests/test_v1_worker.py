@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import mlx.core as mx
+import mlx.nn as nn
 import pytest
 import torch
 
@@ -130,6 +131,16 @@ def _make_worker(model_runner: object) -> MetalWorker:
 
 class TestWorkerRunnerBoundaryDelegation:
     """Worker should honor model runner memory-reporting modes."""
+
+    def test_model_inspection_renders_mlx_module_tree(self) -> None:
+        model = nn.Sequential(nn.Linear(4, 8), nn.RMSNorm(8))
+        worker = _make_worker(SimpleNamespace(model=model))
+
+        inspection = MetalWorker.get_model_inspection(worker)
+
+        assert inspection.splitlines()[0] == "Sequential("
+        assert "Linear(input_dims=4, output_dims=8, bias=True)" in inspection
+        assert "RMSNorm(8, eps=1e-05)" in inspection
 
     @pytest.mark.parametrize("revision", [None, "release-tag", "a" * 40])
     def test_init_device_preserves_stt_revision(self, monkeypatch, revision) -> None:

@@ -799,6 +799,7 @@ class TestCommitProbeBudget:
 
         assert plan.kv_budget == _PLANNED_KV_BUDGET
         assert plan.num_blocks == 2_900
+        assert "increase --gpu-memory-utilization" in plan.format_mitigations()
 
     def test_busy_machine_keeps_the_capacity_it_was_given(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
@@ -859,6 +860,24 @@ class TestCommitProbeBudget:
 
         assert plan.kv_budget == (2 << 30) - _PROBE_RESERVE
         assert "sized down" in caplog.text
+
+    def test_paged_machine_does_not_advise_raising_the_fraction(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Once the probe sizes the pool to free memory, the fraction no longer
+        bounds it, so the error must not tell the user to raise it."""
+        over_tolerance = kv_swap_tolerance_bytes(KV_COMMIT_SAMPLE_BYTES) + 1
+
+        plan = self._plan(
+            monkeypatch,
+            free_bytes=_PROBE_RESERVE // 2,
+            swap_out_bytes=over_tolerance,
+        )
+
+        assert plan.kv_budget <= 0
+        mitigations = plan.format_mitigations()
+        assert "close other applications" in mitigations
+        assert "increase --gpu-memory-utilization" not in mitigations
 
     def test_capacity_survives_a_fit_below_one_dense_block(
         self, monkeypatch: pytest.MonkeyPatch

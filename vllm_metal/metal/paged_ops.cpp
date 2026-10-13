@@ -799,7 +799,7 @@ static void dispatch_paged_attention_v2_online(
   // same value the gate always used.)
   const bool partition = (pure_decode || window_batch)
       && kernels::should_split_decode(
-          num_heads, total_q_tokens, max_num_partitions, detected_gpu_core_count());
+          num_heads, total_q_tokens, max_num_partitions, gpu_core_count());
 
   auto* lib = d.get_library("paged_attention_v2_kern");
   auto& enc = metal::get_command_encoder(s);
@@ -2121,7 +2121,7 @@ NB_MODULE(_paged_ops, m) {
   register_mlx_patch(m);
   m.attr("PARTITION_SIZE") = nb::int_(kPartitionSize);
   m.def("detected_gpu_core_count", &detected_gpu_core_count,
-        "Positive GPU core count; raises if detection is unavailable or invalid.");
+        "Detected GPU core count, or zero when detection is unavailable.");
   m.def("_override_detected_gpu_core_count_for_test",
         &override_detected_gpu_core_count_for_test, nb::arg("cores"),
         "Test-only. A positive count replaces hardware detection; zero simulates "

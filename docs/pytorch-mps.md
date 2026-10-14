@@ -16,8 +16,7 @@ no compiler is needed. Source checkouts use the [development setup](CONTRIBUTING
 Selecting MPS defaults to MRv2. Use unquantized FP16/BF16 checkpoints and greedy
 requests (`temperature=0`, without logprobs).
 
-The optional [Qwen3-TTS integration](qwen3-tts-mps.md) reuses vLLM-Omni's
-HTTP server, stage runners, continuous batching, and audio streaming.
+For speech generation, see [Qwen3-TTS on Apple Silicon](qwen3-tts-mps.md).
 
 ## Models
 

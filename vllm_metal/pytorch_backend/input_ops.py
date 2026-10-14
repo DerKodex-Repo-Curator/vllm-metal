@@ -150,9 +150,31 @@ def make_block_pointer_tensor(self, tensors):
     return torch.tensor([tensor.data_ptr() for tensor in tensors], dtype=torch.uint64)
 
 
+def prepare_rope_positions(self, mapping, cu, prefill, computed):
+    offsets, rows = token_rows(cu, self.positions.shape[1] - 1)
+    slots = mapping[rows].long()
+    original = computed[slots].long() + offsets - cu[rows]
+    channels = (
+        slots[None, :] * self.num_dims
+        + torch.arange(self.num_dims, device=mapping.device)[:, None]
+    )
+    cached = self.prefill_positions.gpu[
+        channels, original.clamp(0, self.max_model_len - 1)[None, :]
+    ]
+    positions = torch.where(
+        (computed[slots] < prefill[slots])[None, :],
+        cached,
+        (original + self.prefill_delta.gpu[slots])[None, :],
+    )
+    self.positions[:, :-1].copy_(torch.where(offsets[None, :] < cu[-1], positions, 0))
+
+
 def install():
     from vllm.v1.worker.gpu import block_table, input_batch, model_runner
+    from vllm.v1.worker.gpu.mm.rope import RopeState
     from vllm.v1.worker.gpu.sample import sampler
+
+    RopeState.prepare_positions = prepare_rope_positions
 
     for name in (
         "prepare_prefill_inputs",

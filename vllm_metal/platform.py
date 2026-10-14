@@ -122,6 +122,7 @@ class MetalPlatform(Platform):
     # Whether the configured model is a block-diffusion LM, whose runner has
     # its own sampler; set by check_and_update_config for validate_request.
     _serves_diffusion: ClassVar[bool] = False
+    _serves_omni: ClassVar[bool] = False
 
     # --- Ray distributed executor support (Phase 1) ---
     # Advertise the Apple GPU as a custom Ray resource named "mlx".  Because this
@@ -330,6 +331,12 @@ class MetalPlatform(Platform):
         from vllm.sampling_params import SamplingParams
 
         if not isinstance(params, SamplingParams):
+            return
+
+        if envs.VLLM_METAL_BACKEND == "mps" and cls._serves_omni:
+            from vllm_metal.pytorch_backend.omni_sampling import validate_request
+
+            validate_request(params)
             return
 
         unsupported_controls = [
@@ -574,7 +581,8 @@ class MetalPlatform(Platform):
         if backend == "mps":
             from vllm_metal.pytorch_backend.worker import configure_mps
 
-            configure_mps(vllm_config)
+            cls._serves_omni = getattr(model_config, "model_stage", None) is not None
+            configure_mps(vllm_config, omni=cls._serves_omni)
         if parallel_config.worker_cls == "auto":
             parallel_config.worker_cls = (
                 "vllm_metal.pytorch_backend.worker.MPSWorker"

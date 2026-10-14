@@ -147,3 +147,143 @@ def test_rms_norm_parity(dtype, fused):
         torch.testing.assert_close(residual.cpu(), expected_residual, atol=0, rtol=0)
         torch.testing.assert_close(actual[0].cpu(), expected[0], atol=0, rtol=0)
     torch.testing.assert_close(actual.cpu(), expected, **op.get_tolerance(dtype))
+
+
+def test_mrope_positions_preserve_ragged_prefill_and_decode():
+    from vllm_metal.pytorch_backend.input_ops import prepare_rope_positions
+
+    state = SimpleNamespace(
+        num_dims=3,
+        max_model_len=8,
+        positions=torch.full((3, 7), -1, device="mps", dtype=torch.int64),
+        prefill_positions=SimpleNamespace(
+            gpu=torch.arange(4 * 3 * 8, device="mps").reshape(12, 8)
+        ),
+        prefill_delta=SimpleNamespace(gpu=torch.tensor([0, 7, 0, 0], device="mps")),
+    )
+    prepare_rope_positions(
+        state,
+        torch.tensor([3, 1], device="mps"),
+        torch.tensor([0, 2, 5], device="mps"),
+        torch.tensor([0, 4, 0, 3], device="mps"),
+        torch.tensor([0, 4, 0, 1], device="mps"),
+    )
+    assert state.positions.cpu().tolist() == [
+        [73, 74, 11, 12, 13, 0, -1],
+        [81, 82, 11, 12, 13, 0, -1],
+        [89, 90, 11, 12, 13, 0, -1],
+    ]
+
+
+def test_omni_sampling_seed_survives_batch_reordering():
+    from vllm_metal.pytorch_backend.omni_sampling import gumbel_sample
+
+    logits = torch.randn(3, 1024, device="mps")
+    mapping = torch.tensor([3, 1, 0], device="mps")
+    temperatures = torch.tensor([0.9, 0.9, 0.9, 0.9], device="mps")
+    seeds = torch.tensor([12, 34, 56, 78], device="mps")
+    positions = torch.tensor([27, 13, 42], device="mps")
+    actual = gumbel_sample(logits, mapping, temperatures, seeds, positions, True, False)
+    reordered = gumbel_sample(
+        logits.flip(0),
+        mapping.flip(0),
+        temperatures,
+        seeds,
+        positions.flip(0),
+        True,
+        False,
+    )
+    single = gumbel_sample(
+        logits[1:2], mapping[1:2], temperatures, seeds, positions[1:2], True, False
+    )
+    assert torch.equal(actual.cpu(), reordered.flip(0).cpu())
+    assert torch.equal(actual[1:2].cpu(), single.cpu())
+
+
+def test_omni_repetition_penalty_matches_upstream_torch():
+    from vllm.model_executor.layers.utils import apply_penalties as reference
+
+    from vllm_metal.pytorch_backend.omni_sampling import apply_penalties, bincount
+
+    logits = torch.tensor([[2.0, -3.0, 4.0, -5.0], [-1.0, 2.0, -3.0, 4.0]])
+    prompts = torch.tensor([[0, 1], [2, 3]])
+    outputs = torch.tensor([[1, 1], [0, 3]])
+    rep, freq, pres = (
+        torch.tensor([1.2, 1.5]),
+        torch.zeros(2),
+        torch.zeros(2),
+    )
+    with torch.compiler.set_stance("force_eager"):
+        expected = reference(logits.clone(), prompts, outputs, pres, freq, rep)
+    ids = torch.cat([prompts, outputs], dim=1).to("mps")
+    mask = torch.zeros(2, 1, dtype=torch.int32, device="mps")
+    counts = torch.zeros(2, 4, dtype=torch.int32, device="mps")
+    mapping = torch.tensor([0, 1], device="mps")
+    bincount(mapping, ids, torch.tensor([2, 2]), torch.tensor([4, 4]), mask, counts, 4)
+    actual = logits.to("mps")
+    apply_penalties(
+        actual,
+        mapping,
+        None,
+        None,
+        rep.to("mps"),
+        freq.to("mps"),
+        pres.to("mps"),
+        mask,
+        counts,
+    )
+    torch.testing.assert_close(actual.cpu(), expected)
+
+
+@pytest.mark.parametrize("position,blocked", [(3, True), (4, False)])
+def test_omni_min_tokens_suppresses_eos_until_boundary(position, blocked):
+    from vllm_metal.pytorch_backend.omni_sampling import apply_min_tokens
+
+    logits = torch.tensor([[1.0, 2.0, 3.0]], device="mps")
+    zero = torch.tensor([0], device="mps", dtype=torch.int32)
+    empty_ids = torch.zeros(1, 1, device="mps", dtype=torch.int32)
+    apply_min_tokens(
+        logits,
+        zero,
+        torch.tensor([position], device="mps"),
+        zero,
+        empty_ids,
+        zero,
+        empty_ids,
+        torch.zeros(1, 1, device="mps"),
+        torch.tensor([5], device="mps"),
+        torch.tensor([1], device="mps"),
+        zero.bool(),
+        torch.tensor([[2]], device="mps"),
+    )
+    assert bool(torch.isneginf(logits[0, 2]).cpu()) == blocked
+    assert logits[0, :2].cpu().tolist() == [1.0, 2.0]
+
+
+def test_omni_pageable_output_copy_owns_cpu_storage():
+    pytest.importorskip("vllm_omni")
+    from vllm_omni.worker_v2.omni_ar_model_runner import _async_copy_tensor
+
+    source = torch.arange(8, device="mps", dtype=torch.float32)
+    output = _async_copy_tensor(source, pin_memory=False)
+    source.zero_()
+    assert output.device.type == "cpu"
+    torch.testing.assert_close(output, torch.arange(8, dtype=torch.float32))
+
+
+@pytest.mark.parametrize("with_metadata", [False, True])
+def test_omni_macos_transport_handles_long_names_and_page_padding(with_metadata):
+    pytest.importorskip("vllm_omni")
+    from vllm_metal.pytorch_backend.omni_connector import MetalSharedMemoryConnector
+
+    connector = MetalSharedMemoryConnector({})
+    key = "speech-" + "long-request-id-" * 8
+    try:
+        ok, size, metadata = connector.put("0", "1", key, {"frame": 7})
+        assert ok
+        connector.reap_consumed()
+        result = connector.get("0", "1", key, metadata if with_metadata else None)
+        assert result == ({"frame": 7}, size)
+        assert connector.get("0", "1", key) is None
+    finally:
+        connector.close()

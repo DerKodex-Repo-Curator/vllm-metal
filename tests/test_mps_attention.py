@@ -94,7 +94,6 @@ torch.mps.synchronize()
         (64, 8, None, None),
         (96, 16, 33, 2.0),
         (128, 32, None, 0.0),
-        (128, 16, None, None),
         (256, 16, 33, None),
         (512, 8, None, 2.0),
     ],

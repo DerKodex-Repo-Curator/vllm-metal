@@ -4,6 +4,7 @@
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -43,14 +44,15 @@ assert sys.modules["_paged_ops"] is None
 
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 @pytest.mark.parametrize(
-    "head_size,block_size,window,softcap",
+    "head_size,block_size,window,softcap,gqa_decode",
     [
-        (64, 8, None, None),
-        (96, 16, 33, 2.0),
-        (128, 32, None, 0.0),
-        (128, 16, None, None),
-        (256, 16, 33, None),
-        (512, 8, None, 2.0),
+        (64, 8, None, None, False),
+        (96, 16, 33, 2.0, False),
+        (128, 32, None, 0.0, False),
+        (256, 16, 33, None, False),
+        (512, 8, None, 2.0, False),
+        (128, 16, None, None, False),
+        (128, 16, None, None, True),
     ],
 )
 @pytest.mark.parametrize(
@@ -72,6 +74,7 @@ def test_mps_paged_attention(
     block_size,
     window,
     softcap,
+    gqa_decode,
     force_tiled,
     counts,
     starts,
@@ -158,7 +161,10 @@ def test_mps_paged_attention(
         slot_mapping=torch.tensor(slots, dtype=torch.int64, device="mps"),
         is_prefilling=torch.tensor(prefilling) if prefilling is not None else None,
     )
-    metadata = MPSAttentionMetadataBuilder(None, [], None, torch.device("mps")).build(
+    config = SimpleNamespace(
+        model_config=SimpleNamespace(model_stage="qwen3_tts" if gqa_decode else None)
+    )
+    metadata = MPSAttentionMetadataBuilder(None, [], config, torch.device("mps")).build(
         0, common
     )
     assert metadata.window_seqlen_q == (

@@ -23,6 +23,7 @@ class MPSAttentionMetadata(AttentionMetadata):
     cu_seqlens: torch.Tensor
     max_seq_len: int
     window_seqlen_q: int = 1
+    gqa_decode: bool = False
 
 
 class MPSAttentionBackend(AttentionBackend):
@@ -54,6 +55,9 @@ class MPSAttentionBackend(AttentionBackend):
 class MPSAttentionMetadataBuilder(AttentionMetadataBuilder[MPSAttentionMetadata]):
     def __init__(self, kv_cache_spec, layer_names, vllm_config, device):
         super().__init__(kv_cache_spec, layer_names, vllm_config, device)
+        self.gqa_decode = (
+            getattr(vllm_config.model_config, "model_stage", None) is not None
+        )
 
     def build(self, common_prefix_len, common_attn_metadata, **kwargs):
         m = common_attn_metadata
@@ -73,6 +77,7 @@ class MPSAttentionMetadataBuilder(AttentionMetadataBuilder[MPSAttentionMetadata]
             m.query_start_loc,
             m.max_seq_len,
             window_seqlen_q,
+            self.gqa_decode,
         )
 
 
@@ -145,5 +150,6 @@ class MPSAttentionImpl(AttentionImpl[MPSAttentionMetadata]):
             self.sliding_window,
             self.logits_soft_cap,
             m.window_seqlen_q,
+            m.gqa_decode,
         )
         return output

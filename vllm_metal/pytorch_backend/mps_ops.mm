@@ -95,7 +95,8 @@ class PagedAttention {
                const Tensor& kc, const Tensor& vc, const Tensor& slots,
                const Tensor& blocks, const Tensor& lens, const Tensor& cu,
                const Tensor& out, int max_seq_len, double scale,
-               int sliding_window, double softcap, int window_seqlen_q) {
+               int sliding_window, double softcap, int window_seqlen_q,
+               bool gqa_decode) {
     for (auto* t : {&q, &k, &v, &kc, &vc, &slots, &blocks, &lens, &cu, &out})
       TORCH_CHECK(t->is_mps(), "All paged attention buffers must be on MPS");
     TORCH_CHECK(q.dim() == 3 && q.is_contiguous() &&
@@ -137,12 +138,20 @@ class PagedAttention {
         (window_seqlen_q + VLLM_METAL_PA_WINDOW_ROWS - 1) / VLLM_METAL_PA_WINDOW_ROWS : 0;
     const bool prefill = tokens > seqs && !window;
     const bool nax = prefill && nax_library_ != nil;
-    const bool split = !prefill
-        && kernels::should_split_decode(heads, tokens, parts, gpu_cores_);
+    // Omni explicitly opts into the existing GQA shader, including Qwen3-TTS's
+    // two query heads per KV head. Other callers retain their measured policy.
+    const bool gqa = gqa_decode && tokens == seqs && window_seqlen_q == 1 &&
+        sliding_window < 0 && softcap == 0 && heads == 2 * kv_heads &&
+        head_size == 128 && block_size == 16;
+    const bool split = gqa || (!prefill
+        && kernels::should_split_decode(heads, tokens, parts, gpu_cores_));
     const std::string dt = q.scalar_type() == at::kHalf ? "half" : "bfloat16_t";
     const auto cfg = kernels::select_tile_config(head_size).value();
     auto scatter = pipeline(kernels::reshape_and_cache_name(dt, dt));
-    auto name = nax ? kernels::nax_name(dt, head_size, block_size) :
+    auto name = gqa ? "paged_attention_gqa_decode_" + dt + "_hs" +
+        std::to_string(head_size) + "_bs" + std::to_string(block_size) +
+        "_ps" + std::to_string(kPartitionSize) :
+        nax ? kernels::nax_name(dt, head_size, block_size) :
         prefill ? kernels::tiled_name(dt, head_size, block_size, cfg) :
         kernels::paged_name(
             dt, dt, dt, head_size, block_size, split ? kPartitionSize : 0);
@@ -150,11 +159,15 @@ class PagedAttention {
     id<MTLComputePipelineState> reduce = nil;
     Tensor tmp, sums, maxes;
     if (split) {
+      reduce = pipeline(
+          kernels::paged_reduce_kernel_name(dt, head_size, kPartitionSize));
+      TORCH_CHECK(kernels::paged_reduce_threadgroup_bytes(parts) +
+                      reduce.staticThreadgroupMemoryLength <=
+                      at::mps::getCurrentMPSStream()->device().maxThreadgroupMemoryLength,
+                  "Attention context exceeds the reducer's threadgroup memory");
       tmp = at::empty({tokens, heads, parts, head_size}, q.options());
       sums = at::empty({tokens, heads, parts}, q.options().dtype(at::kFloat));
       maxes = at::empty_like(sums);
-      reduce = pipeline(
-          kernels::paged_reduce_kernel_name(dt, head_size, kPartitionSize));
     }
     auto stream = at::mps::getCurrentMPSStream();
     at::mps::dispatch_sync_with_rethrow(stream->queue(), ^{
@@ -189,14 +202,15 @@ class PagedAttention {
           threads = nax ? kernels::kNaxThreads : cfg.NUM_THREADS;
           if (!nax) [enc setThreadgroupMemoryLength:
               kernels::tiled_shared_bytes(cfg, head_size, q.element_size()) atIndex:0];
-        } else {
+        } else if (!gqa) {
           [enc setThreadgroupMemoryLength:kernels::paged_threadgroup_bytes(
               head_size, block_size, static_cast<int>(q.element_size()),
               window, VLLM_METAL_PA_WINDOW_ROWS) atIndex:0];
         }
         if (split) { buffer(enc, 0, sums); buffer(enc, 1, maxes); }
-        [enc dispatchThreadgroups:MTLSizeMake(heads, grid_y, split ? parts : 1)
-            threadsPerThreadgroup:MTLSizeMake(threads, 1, 1)];
+        [enc dispatchThreadgroups:gqa ? MTLSizeMake(parts, kv_heads, seqs) :
+                                       MTLSizeMake(heads, grid_y, split ? parts : 1)
+            threadsPerThreadgroup:MTLSizeMake(gqa ? 32 * (heads / kv_heads) : threads, 1, 1)];
         if (split) {
           [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
           [enc setComputePipelineState:reduce];
@@ -221,5 +235,11 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("nax_supported", &nax_supported);
   pybind11::class_<PagedAttention>(m, "PagedAttention")
       .def(pybind11::init<const std::string&, const std::string&, int>())
-      .def("forward", &PagedAttention::forward);
+      .def("forward", &PagedAttention::forward,
+           pybind11::arg("q"), pybind11::arg("k"), pybind11::arg("v"),
+           pybind11::arg("kc"), pybind11::arg("vc"), pybind11::arg("slots"),
+           pybind11::arg("blocks"), pybind11::arg("lens"), pybind11::arg("cu"),
+           pybind11::arg("out"), pybind11::arg("max_seq_len"), pybind11::arg("scale"),
+           pybind11::arg("sliding_window"), pybind11::arg("softcap"),
+           pybind11::arg("window_seqlen_q"), pybind11::arg("gqa_decode") = false);
 }

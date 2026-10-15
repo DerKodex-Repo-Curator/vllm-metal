@@ -136,6 +136,7 @@ from vllm_metal.v1.structured_output import MetalStructuredOutputApplier
 
 if TYPE_CHECKING:
     from vllm_metal.patches.aux_hidden_states import AuxHiddenStateCapture
+    from vllm_metal.v1.kv_offload.connector import MetalOffloadingConnector
 
 logger = init_logger(__name__)
 
@@ -1048,11 +1049,24 @@ class MetalModelRunner:
             raise RuntimeError("Cannot release the KV cache while a step is in flight.")
         if self._paged_attention_runtime is not None:
             self._paged_attention_runtime.release_kv_memory()
+        if (connector := self._offloading_connector()) is not None:
+            connector.release_host_pool()
 
     def restore_kv_cache_memory(self) -> None:
         """Re-create the KV cache freed by ``release_kv_cache_memory``."""
+        if (connector := self._offloading_connector()) is not None:
+            connector.restore_host_pool()
         if self._paged_attention_runtime is not None:
             self._paged_attention_runtime.restore_kv_memory()
+
+    @staticmethod
+    def _offloading_connector() -> "MetalOffloadingConnector | None":
+        if not has_kv_transfer_group():
+            return None
+        from vllm_metal.v1.kv_offload.connector import MetalOffloadingConnector
+
+        connector = get_kv_transfer_group()
+        return connector if isinstance(connector, MetalOffloadingConnector) else None
 
     def reset_mm_cache(self) -> None:
         """Reset profiling-time multimodal cache state when present."""

@@ -79,6 +79,8 @@ Sleep levels mean something different on unified memory than on a GPU:
   the KV cache. Restore it with `llm.wake_up(tags=["kv_cache"])`.
 - The amount freed is the part of the KV pool that was in use, because the
   pool is allocated lazily.
+- With [KV offloading](kv_offloading.md), sleep also frees the host pool. It
+  comes back empty at wake. Prompts already on the disk tier still restore.
 
 Sleep mode supports dense and hybrid models on the MLX backend. Standalone MLA
 models and speculative decoding methods other than `ngram` are not supported

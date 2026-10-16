@@ -90,7 +90,7 @@ dev = [
     "gguf>=0.17.0",
 ]
 all = [
-    "vllm-metal[gguf,stt,dev]",
+    "vllm-metal[gguf,stt,omni,dev]",
 ]
 
 [project.urls]

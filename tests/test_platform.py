@@ -282,7 +282,7 @@ class TestMetalPlatform:
     def test_mps_omni_requires_greedy_requests(
         self, monkeypatch, controls, unsupported
     ):
-        monkeypatch.setenv("VLLM_METAL_BACKEND", "mps")
+        monkeypatch.setattr("vllm_metal.envs.VLLM_METAL_BACKEND", "mps")
         monkeypatch.setattr(MetalPlatform, "_serves_omni", True)
         params = SamplingParams(**({"temperature": 0} | controls))
         if unsupported is None:

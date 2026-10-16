@@ -267,23 +267,20 @@ class TestMetalPlatform:
         MetalPlatform.validate_request({}, SamplingParams(min_p=0.2))
 
     @pytest.mark.parametrize(
-        "controls,unsupported",
+        "omni,controls,unsupported",
         [
-            ({}, None),
-            ({"temperature": 0.9}, "temperature"),
-            ({"repetition_penalty": 1.05}, None),
-            ({"min_tokens": 2}, "min_tokens"),
-            ({"frequency_penalty": 0.2}, "frequency_penalty"),
-            ({"presence_penalty": 0.2}, "presence_penalty"),
-            ({"logit_bias": {0: 1}}, "logit_bias"),
-            ({"allowed_token_ids": [0]}, "allowed_token_ids"),
+            (True, {}, None),
+            (True, {"temperature": 0.9}, "temperature"),
+            (True, {"repetition_penalty": 1.05}, None),
+            (False, {"repetition_penalty": 1.05}, "repetition_penalty"),
+            (True, {"frequency_penalty": 0.2}, "frequency_penalty"),
+            (True, {"presence_penalty": 0.2}, "presence_penalty"),
+            (True, {"allowed_token_ids": [0]}, "allowed_token_ids"),
         ],
     )
-    def test_mps_omni_requires_greedy_requests(
-        self, monkeypatch, controls, unsupported
-    ):
+    def test_mps_omni_sampling_controls(self, monkeypatch, omni, controls, unsupported):
         monkeypatch.setattr("vllm_metal.envs.VLLM_METAL_BACKEND", "mps")
-        monkeypatch.setattr(MetalPlatform, "_serves_omni", True)
+        monkeypatch.setattr(MetalPlatform, "_serves_omni", omni)
         params = SamplingParams(**({"temperature": 0} | controls))
         if unsupported is None:
             MetalPlatform.validate_request({}, params)

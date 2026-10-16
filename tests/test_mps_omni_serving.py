@@ -37,6 +37,7 @@ def speech_server(tmp_path_factory):
     env = dict(
         os.environ,
         VLLM_METAL_BACKEND="mps",
+        PYTORCH_ENABLE_MPS_FALLBACK="0",
         VLLM_NO_USAGE_STATS="1",
         VLLM_USE_V2_MODEL_RUNNER="1",
         HF_HUB_OFFLINE="1",
@@ -97,8 +98,8 @@ def speech_request(index):
     }
 
 
-@pytest.mark.parametrize("concurrency", [1, 8])
-async def test_upstream_speech_streams_complete_across_batches(
+@pytest.mark.parametrize("concurrency", [1, 4, 8])
+async def test_speech_streams_complete_for_concurrent_requests(
     speech_server, concurrency
 ):
     async with httpx.AsyncClient(timeout=90, trust_env=False) as client:
